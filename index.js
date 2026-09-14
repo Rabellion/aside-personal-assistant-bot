@@ -96,6 +96,7 @@ async function think(channel, prompt) {
   await memory.load(channel);
   const context = memory.buildContext();
   const fullPrompt = context ? `${context}Huzaifa just said: ${prompt}` : prompt;
+  console.log(`[think] provider=${currentProvider} model=${currentModelId} agentOnline=${isAgentOnline()} promptLen=${fullPrompt.length}`);
 
   let result;
   if (isAgentOnline() && currentProvider !== 'aside') {
@@ -107,6 +108,7 @@ async function think(channel, prompt) {
     if (res.ok) {
       result = res;
     } else {
+      console.log(`[think] local agent failed: ${String(res.text).slice(0, 200)} - falling back to dyno`);
       // If the PC run failed, still try the dyno so the user gets *something*.
       const fallback = await runModel(currentProvider, currentModelId, fullPrompt);
       result = fallback.ok
@@ -117,6 +119,7 @@ async function think(channel, prompt) {
     result = await runModel(currentProvider, currentModelId, fullPrompt);
   }
 
+  console.log(`[think] done ok=${result.ok} textLen=${(result.text || '').length}`);
   await memory.appendTurn(channel, 'user', prompt);
   await memory.appendTurn(channel, 'assistant', result.text);
   return result;
@@ -353,7 +356,10 @@ client.on('messageCreate', async (message) => {
     const result = await think(message.channel, message.content.trim());
     await respondWith(message.channel, result.text);
   } catch (err) {
-    await message.channel.send(`Something went wrong: ${err.message}`);
+    console.error('[messageCreate] failed:', err);
+    await message.channel.send(`Something went wrong: ${err.message}`).catch((e) => {
+      console.error('[messageCreate] could not even send the error:', e.message);
+    });
   } finally {
     clearInterval(typingInterval);
   }

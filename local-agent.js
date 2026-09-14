@@ -136,6 +136,11 @@ function runLocal(provider, modelId, prompt, onProgress) {
 
 let ws = null;
 let reconnectDelay = 1000;
+let heartbeatTimer = null;
+// Heroku's router drops any connection idle for 55s (H15 "Idle connection").
+// A task that runs for minutes without printing anything would otherwise get
+// its connection killed out from under it, losing the result.
+const HEARTBEAT_MS = 25000;
 
 function connect() {
   const url = `${BRIDGE_URL}?token=${encodeURIComponent(SECRET)}`;
@@ -144,6 +149,13 @@ function connect() {
   ws.on('open', () => {
     reconnectDelay = 1000;
     console.log('[agent] connected to bridge');
+
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = setInterval(() => {
+      if (ws && ws.readyState === 1) {
+        try { ws.ping(); } catch (_) { /* ignore */ }
+      }
+    }, HEARTBEAT_MS);
     ws.send(JSON.stringify({
       type: 'hello',
       host: os.hostname(),
@@ -189,6 +201,7 @@ function connect() {
   });
 
   ws.on('close', (code, reason) => {
+    clearInterval(heartbeatTimer);
     console.log(`[agent] disconnected (${code} ${reason}). Reconnecting in ${reconnectDelay / 1000}s`);
     setTimeout(connect, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 30000);

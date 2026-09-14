@@ -20,6 +20,11 @@ const { WebSocketServer } = require('ws');
 
 const PROTOCOL_VERSION = 1;
 const TASK_TIMEOUT_MS = 1000 * 60 * 10; // local agent tasks may be long
+// Heroku's router closes any connection with no traffic for 55s (error H15
+// "Idle connection"). A long-running agent task can easily go that long with
+// nothing to say, so without an explicit heartbeat the bridge gets torn down
+// mid-task roughly every minute. Ping well inside that window.
+const HEARTBEAT_MS = 25000;
 
 let wss = null;
 let agentSocket = null;
@@ -137,11 +142,28 @@ function startBridge({ port, secret, onReady }) {
     }
 
     agentSocket = ws;
+    ws.isAlive = true;
     ws.send(JSON.stringify({ type: 'welcome', protocol: PROTOCOL_VERSION }));
+
+    ws.on('pong', () => { ws.isAlive = true; });
+
+    // Keep the connection hot so Heroku's 55s idle reaper doesn't kill it,
+    // and drop genuinely dead sockets instead of letting them linger.
+    const heartbeat = setInterval(() => {
+      if (ws.readyState !== 1) return;
+      if (!ws.isAlive) {
+        console.log('[bridge] agent missed heartbeat, terminating socket');
+        ws.terminate();
+        return;
+      }
+      ws.isAlive = false;
+      try { ws.ping(); } catch (_) { /* ignore */ }
+    }, HEARTBEAT_MS);
 
     ws.on('message', handleAgentMessage);
 
     ws.on('close', () => {
+      clearInterval(heartbeat);
       if (agentSocket === ws) {
         agentSocket = null;
         agentInfo = null;
