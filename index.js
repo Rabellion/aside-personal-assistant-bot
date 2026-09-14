@@ -26,6 +26,7 @@ const {
 const { startBridge, dispatchToAgent, isAgentOnline, agentStatus } = require('./bridge');
 const contacts = require('./contacts');
 const memory = require('./memory');
+const reminders = require('./reminders');
 const { parseDmRequest, resolveRecipient } = require('./dmIntent');
 
 setupCredentials();
@@ -92,10 +93,30 @@ function modelRow(providerKey, models) {
 // Route a prompt to the best available executor: the user's PC if the local
 // agent is up, otherwise the sandboxed dyno. Every provider gets the same
 // remembered context, so switching /model doesn't reset the conversation.
+// Tells any model how to schedule something that actually survives. Without
+// this the model assumes it has to hold the promise itself, which it can't -
+// its process exits seconds later.
+function schedulingInstructions() {
+  const now = new Date();
+  return [
+    '',
+    `Current time: ${now.toISOString()} (${reminders.formatLocal(now.toISOString())} ${reminders.TZ}).`,
+    'If Huzaifa asks to be reminded, pinged, or for anything to happen later, do NOT',
+    'claim you will remember it yourself - your process ends when this reply is sent.',
+    'Instead include a marker anywhere in your reply:',
+    '  [[REMIND: <ISO-8601 datetime with offset> | <what to say>]]',
+    `For example: [[REMIND: 2026-09-16T12:00:00+05:00 | upload ML Assignment 02 to the CMS]]`,
+    'An always-on service records it and will DM him at that time even if everything',
+    'else has restarted. The marker is stripped before he sees your reply, so just',
+    'confirm naturally in your own words.',
+    '',
+  ].join('\n');
+}
+
 async function think(channel, prompt) {
   await memory.load(channel);
   const context = memory.buildContext();
-  const fullPrompt = context ? `${context}Huzaifa just said: ${prompt}` : prompt;
+  const fullPrompt = `${context}${schedulingInstructions()}Huzaifa just said: ${prompt}`;
   console.log(`[think] provider=${currentProvider} model=${currentModelId} agentOnline=${isAgentOnline()} promptLen=${fullPrompt.length}`);
 
   let result;
@@ -120,6 +141,24 @@ async function think(channel, prompt) {
   }
 
   console.log(`[think] done ok=${result.ok} textLen=${(result.text || '').length}`);
+
+  // Pull out any scheduling the model asked for and hand it to the always-on
+  // scheduler, so the promise outlives the CLI process that made it.
+  const { cleaned, found } = reminders.extractMarkers(result.text || '');
+  if (found.length) {
+    const confirmations = [];
+    for (const r of found) {
+      try {
+        const saved = await reminders.add(channel, r.when, r.text);
+        confirmations.push(`Scheduled: **${saved.text}** - ${reminders.formatLocal(saved.at)}`);
+        console.log(`[reminders] scheduled ${saved.id} for ${saved.at}`);
+      } catch (err) {
+        confirmations.push(`Couldn't schedule that: ${err.message}`);
+      }
+    }
+    result = { ok: result.ok, text: `${cleaned}\n\n${confirmations.join('\n')}`.trim() };
+  }
+
   await memory.appendTurn(channel, 'user', prompt);
   await memory.appendTurn(channel, 'assistant', result.text);
   return result;
@@ -161,8 +200,10 @@ async function respondWith(channel, text) {
   for (const chunk of chunks) await channel.send(chunk);
 }
 
-client.once('ready', () => {
+client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}. Active: ${currentProvider} / ${currentModelId}.`);
+  // Reload reminders written before the last restart and restart the ticker.
+  await reminders.resume(client, OWNER_ID);
 });
 
 client.on('interactionCreate', async (interaction) => {
@@ -216,10 +257,32 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       if (interaction.commandName === 'status') {
+        const pending = await reminders.list(interaction.channel);
         await interaction.reply(
           `Active: **${activeLabel()}**\n` +
           `Executing on: ${whereItRuns()}\n` +
-          `Local agent: **${isAgentOnline() ? 'online' : 'offline'}**`,
+          `Local agent: **${isAgentOnline() ? 'online' : 'offline'}**\n` +
+          `Scheduled reminders: **${pending.length}**`,
+        );
+        return;
+      }
+
+      if (interaction.commandName === 'reminders') {
+        const cancelId = interaction.options.getString('cancel');
+        if (cancelId) {
+          const ok = await reminders.remove(interaction.channel, cancelId);
+          await interaction.reply(ok ? `Cancelled \`${cancelId}\`.` : `No reminder with id \`${cancelId}\`.`);
+          return;
+        }
+        const pending = await reminders.list(interaction.channel);
+        if (!pending.length) {
+          await interaction.reply('Nothing scheduled.');
+          return;
+        }
+        await interaction.reply(
+          `**Scheduled (${reminders.TZ}):**\n` +
+          pending.map((r) => `\`${r.id}\`  ${reminders.formatLocal(r.at)}  -  ${r.text}`).join('\n') +
+          '\n\n_Cancel one with_ `/reminders cancel:<id>`',
         );
         return;
       }

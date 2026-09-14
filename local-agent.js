@@ -25,6 +25,7 @@ const os = require('os');
 // though the earlier .cmd-launch crash was already fixed.
 const spawn = require('cross-spawn');
 const WebSocket = require('ws');
+const { buildPersonalContext, MEMORY_DIR } = require('./personalContext');
 
 // Never let one bad task take the whole agent (and your PowerShell window)
 // down. A CLI tool's own unrestricted shell/file access is the real risk
@@ -74,7 +75,17 @@ const LOCAL_PROVIDERS = {
 };
 
 function buildAgentPrompt(userPrompt) {
+  // Re-read Aside's memory from disk on EVERY task. No caching, so edits to
+  // those .md files take effect on the very next message.
+  let personal = '';
+  try {
+    personal = buildPersonalContext();
+  } catch (err) {
+    console.log('[agent] could not read Aside memory:', err.message);
+  }
+
   return [
+    personal,
     "You are Huzaifa's autonomous desktop assistant, reached through a Discord DM.",
     '',
     'IMPORTANT - where you are actually running:',
@@ -110,7 +121,7 @@ function buildAgentPrompt(userPrompt) {
     'Reply conversationally and concisely, as a personal assistant in a chat - not as a report.',
     '',
     `Huzaifa's request: ${userPrompt}`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 function runLocal(provider, modelId, prompt, onProgress) {
@@ -184,11 +195,15 @@ function connect() {
         try { ws.ping(); } catch (_) { /* ignore */ }
       }
     }, HEARTBEAT_MS);
+    let memoryOk = false;
+    try { memoryOk = !!buildPersonalContext(); } catch (_) { memoryOk = false; }
+    console.log(`[agent] Aside memory: ${memoryOk ? 'found at ' + MEMORY_DIR : 'NOT found at ' + MEMORY_DIR}`);
+
     ws.send(JSON.stringify({
       type: 'hello',
       host: os.hostname(),
       platform: `${os.platform()} ${os.release()}`,
-      tools: ['shell', 'filesystem', 'browser'],
+      tools: ['shell', 'filesystem', 'browser'].concat(memoryOk ? ['aside-memory'] : []),
       workdir: WORKDIR,
     }));
   });

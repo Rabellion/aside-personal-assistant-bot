@@ -18,6 +18,10 @@ const commands = [
     .setName('agent')
     .setDescription('Check whether the local agent on your PC is connected'),
   new SlashCommandBuilder()
+    .setName('reminders')
+    .setDescription('List scheduled reminders, or cancel one')
+    .addStringOption((o) => o.setName('cancel').setDescription('Reminder id to cancel').setRequired(false)),
+  new SlashCommandBuilder()
     .setName('status')
     .setDescription('Show the active provider, model, and where it runs'),
   new SlashCommandBuilder()
