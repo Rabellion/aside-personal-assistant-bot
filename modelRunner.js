@@ -17,8 +17,9 @@ const MODELS = {
   chatgpt: {
     label: 'ChatGPT (via Codex CLI / your ChatGPT subscription)',
     bin: 'codex',
-    // `codex exec` = non-interactive automation mode.
-    args: (prompt) => ['exec', prompt, '--full-auto'],
+    // `codex exec` = non-interactive automation mode. --skip-git-repo-check
+    // because the Heroku dyno's app directory isn't a git checkout.
+    args: (prompt) => ['exec', prompt, '--full-auto', '--skip-git-repo-check'],
   },
   gemini: {
     label: 'Gemini (via Gemini CLI / your Gemini subscription)',

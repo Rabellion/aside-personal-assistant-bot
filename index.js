@@ -93,6 +93,10 @@ client.on('messageCreate', async (message) => {
   if (message.channel.type !== ChannelType.DM) return; // DM-only bot
   if (message.author.id !== OWNER_ID) return; // hard allowlist
   if (!message.content || !message.content.trim()) return;
+  // "aside" mode: stay completely silent here. There's no CLI to run for it
+  // (bin is null) - the Aside event-driven routine handles these messages
+  // separately with real browser/Gmail/WhatsApp/CMS access.
+  if (currentModel === 'aside') return;
 
   await message.channel.sendTyping().catch(() => {});
   // Keep the typing indicator alive for slower models.
