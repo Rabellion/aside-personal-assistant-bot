@@ -25,6 +25,7 @@ const {
 } = require('./relay');
 const { startBridge, dispatchToAgent, isAgentOnline, agentStatus } = require('./bridge');
 const contacts = require('./contacts');
+const memory = require('./memory');
 const { parseDmRequest, resolveRecipient } = require('./dmIntent');
 
 setupCredentials();
@@ -89,22 +90,36 @@ function modelRow(providerKey, models) {
 }
 
 // Route a prompt to the best available executor: the user's PC if the local
-// agent is up, otherwise the sandboxed dyno.
-async function think(prompt) {
+// agent is up, otherwise the sandboxed dyno. Every provider gets the same
+// remembered context, so switching /model doesn't reset the conversation.
+async function think(channel, prompt) {
+  await memory.load(channel);
+  const context = memory.buildContext();
+  const fullPrompt = context ? `${context}Huzaifa just said: ${prompt}` : prompt;
+
+  let result;
   if (isAgentOnline() && currentProvider !== 'aside') {
     const res = await dispatchToAgent({
       provider: currentProvider,
       modelId: currentModelId,
-      prompt,
+      prompt: fullPrompt,
     });
-    if (res.ok) return res;
-    // If the PC run failed, still try the dyno so the user gets *something*.
-    const fallback = await runModel(currentProvider, currentModelId, prompt);
-    return fallback.ok
-      ? { ok: true, text: `${fallback.text}\n\n_(local agent failed, answered from the server instead: ${res.text.slice(0, 200)})_` }
-      : res;
+    if (res.ok) {
+      result = res;
+    } else {
+      // If the PC run failed, still try the dyno so the user gets *something*.
+      const fallback = await runModel(currentProvider, currentModelId, fullPrompt);
+      result = fallback.ok
+        ? { ok: true, text: `${fallback.text}\n\n_(local agent failed, answered from the server instead: ${res.text.slice(0, 200)})_` }
+        : res;
+    }
+  } else {
+    result = await runModel(currentProvider, currentModelId, fullPrompt);
   }
-  return runModel(currentProvider, currentModelId, prompt);
+
+  await memory.appendTurn(channel, 'user', prompt);
+  await memory.appendTurn(channel, 'assistant', result.text);
+  return result;
 }
 
 // Handles a plain-English "tell X ..." / "dm X ..." request. Returns true if
@@ -215,6 +230,8 @@ client.on('interactionCreate', async (interaction) => {
           '`/dm <user> <message>` - explicit fallback for the same thing\n' +
           '`/agent` - is the local agent on your PC connected?\n' +
           '`/status` - active model and where it runs\n\n' +
+          'I remember our recent conversation and anything you tell me to remember, shared across every ' +
+          'model - switching /model doesn\'t reset it. Say "remember that ..." to save something for good.\n\n' +
           'When the local agent is running, the LLMs get real tool access on your PC. ' +
           'When it is not, they run sandboxed on the server and can only talk.',
         );
@@ -308,6 +325,14 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
+  // --- explicit "remember that ..." shortcut, no LLM call needed ---
+  const rememberMatch = message.content.trim().match(/^remember(?:\s+that)?[:\s]+(.+)$/i);
+  if (rememberMatch) {
+    await memory.addFact(message.channel, rememberMatch[1].trim());
+    await message.react('\ud83e\udde0').catch(() => {});
+    return;
+  }
+
   // --- "tell/dm/message someone something" in plain English, no /dm needed ---
   const dmRequest = parseDmRequest(message.content.trim());
   if (dmRequest) {
@@ -325,7 +350,7 @@ client.on('messageCreate', async (message) => {
   }, 8000);
 
   try {
-    const result = await think(message.content.trim());
+    const result = await think(message.channel, message.content.trim());
     await respondWith(message.channel, result.text);
   } catch (err) {
     await message.channel.send(`Something went wrong: ${err.message}`);

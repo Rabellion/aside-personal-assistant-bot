@@ -57,12 +57,17 @@ async function sendDM(client, userId, content, { ownerName, sign = true } = {}) 
 }
 
 function describeSendError(err) {
-  // 50007 = "Cannot send messages to this user"
+  // 50007 = "Cannot send messages to this user". This fires for two different
+  // reasons that look identical from the API: (1) the bot doesn't share any
+  // server with them, or (2) it does, but they have "Allow direct messages
+  // from server members" turned off for that server (Privacy Settings, per
+  // server). Sharing a server is necessary but not sufficient.
   if (err && (err.code === 50007 || /cannot send messages to this user/i.test(err.message || ''))) {
     return (
-      "Discord won't let me DM them. A bot can only DM someone who shares a server with it, " +
-      'and they are not in any server I am in. Get them to join a server I am in ' +
-      '(or invite me to one you share with them) and this will start working.'
+      "Discord blocked it (error 50007). Two possible causes: either we don't share a server yet, " +
+      'or we do but they have DMs from server members turned off for that server ' +
+      '(their Privacy Settings, not something I can change). If you already added me to a shared server ' +
+      'and this still happens, ask them to enable "Allow direct messages from server members" for it.'
     );
   }
   if (err && err.code === 10013) return "That user ID doesn't exist.";
