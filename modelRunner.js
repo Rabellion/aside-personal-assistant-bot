@@ -191,7 +191,11 @@ const PROVIDERS = {
   },
 };
 
-const DEFAULT_PROVIDER = 'aside';
+// Default to Claude Sonnet 5 rather than 'aside'. A Heroku dyno restarts on
+// every deploy and resets this in-memory state, and defaulting to 'aside' meant
+// the bot went silent after each restart until /model was set again.
+// PROVIDERS.anthropic.defaultModel supplies the concrete model id.
+const DEFAULT_PROVIDER = 'anthropic';
 
 function isValidProvider(key) {
   return Object.prototype.hasOwnProperty.call(PROVIDERS, key);
