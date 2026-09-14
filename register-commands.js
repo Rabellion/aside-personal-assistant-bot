@@ -1,28 +1,18 @@
 // Registers the bot's slash commands with Discord. Run this once after
 // deploying (or whenever the command list changes): `npm run register-commands`.
+//
+// /model deliberately takes NO options. Picking a provider and a model happens
+// through select menus so the model list can be fetched live at click time
+// instead of being frozen into the command definition.
 const { REST, Routes, SlashCommandBuilder } = require('discord.js');
-const { listModels, listClaudeModels } = require('./modelRunner');
 
 const commands = [
   new SlashCommandBuilder()
     .setName('model')
-    .setDescription('Switch which AI backend replies to your DMs')
-    .addStringOption((opt) => {
-      opt.setName('name').setDescription('Which model to use').setRequired(true);
-      for (const m of listModels()) opt.addChoices({ name: m.label, value: m.key });
-      return opt;
-    }),
-  new SlashCommandBuilder()
-    .setName('claudemodel')
-    .setDescription('Switch which Claude variant is used when /model is set to claude')
-    .addStringOption((opt) => {
-      opt.setName('name').setDescription('Which Claude variant to use').setRequired(true);
-      for (const m of listClaudeModels()) opt.addChoices({ name: m.label, value: m.key });
-      return opt;
-    }),
+    .setDescription('Pick which provider and model answers your DMs'),
   new SlashCommandBuilder()
     .setName('status')
-    .setDescription('Show which model is currently active and basic bot status'),
+    .setDescription('Show the active provider and model'),
   new SlashCommandBuilder()
     .setName('help')
     .setDescription('Show what this bot can do'),
@@ -38,7 +28,7 @@ async function main() {
   const rest = new REST({ version: '10' }).setToken(token);
   console.log('Registering global slash commands...');
   await rest.put(Routes.applicationCommands(appId), { body: commands });
-  console.log('Done. Global commands can take up to an hour to show up everywhere (usually much faster).');
+  console.log('Done.');
 }
 
 main().catch((err) => {

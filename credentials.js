@@ -6,8 +6,14 @@
 // Expected env vars (all optional - only wire up what you actually have):
 //   CLAUDE_CODE_OAUTH_TOKEN     - long-lived token from `claude setup-token` (Claude Pro/Max)
 //   CODEX_AUTH_JSON_BASE64      - base64 of your local ~/.codex/auth.json (ChatGPT login)
-//   GEMINI_AUTH_JSON_BASE64     - base64 of your local Gemini CLI credentials file
-//   GEMINI_AUTH_JSON_PATH       - where Gemini CLI expects that file (defaults below)
+//   GEMINI_API_KEY              - AI Studio key from https://aistudio.google.com/apikey
+//
+// Google is the odd one out: on 2026-06-18 Google stopped serving Gemini CLI /
+// Code Assist requests for the consumer Google AI Pro and Ultra tiers and moved
+// those users to the Antigravity suite. Antigravity's container token storage is
+// currently write-only, so a subscription OAuth credential cannot be copied onto
+// a headless dyno the way the Claude and ChatGPT ones can. An AI Studio API key
+// is the only path that works headlessly today.
 
 const fs = require('fs');
 const os = require('os');
@@ -40,10 +46,16 @@ function setupCredentials() {
   const codexHome = process.env.CODEX_HOME || path.join(home, '.codex');
   writeBase64File('CODEX_AUTH_JSON_BASE64', path.join(codexHome, 'auth.json'));
 
-  // Gemini CLI's credentials path can vary by version; override with
-  // GEMINI_AUTH_JSON_PATH if the default below doesn't match your install.
-  const geminiAuthPath = process.env.GEMINI_AUTH_JSON_PATH || path.join(home, '.gemini', 'oauth_creds.json');
-  writeBase64File('GEMINI_AUTH_JSON_BASE64', geminiAuthPath);
+  // Gemini CLI reads GEMINI_API_KEY straight from the environment.
+  if (!process.env.GEMINI_API_KEY) {
+    console.log('[credentials] GEMINI_API_KEY not set - the Google provider will not work until it is.');
+  }
+
+  // Legacy: only used if you still have a working Gemini OAuth credential file.
+  if (process.env.GEMINI_AUTH_JSON_BASE64) {
+    const geminiAuthPath = process.env.GEMINI_AUTH_JSON_PATH || path.join(home, '.gemini', 'oauth_creds.json');
+    writeBase64File('GEMINI_AUTH_JSON_BASE64', geminiAuthPath);
+  }
 }
 
 module.exports = { setupCredentials };

@@ -1,11 +1,11 @@
 {
   "name": "aside-personal-assistant-bot",
-  "version": "1.0.0",
-  "description": "Discord DM bot that chats naturally through Claude Code, Codex CLI, and Gemini CLI using subscription (OAuth) auth, with a /model command to switch backends.",
+  "version": "2.0.0",
+  "description": "Discord DM bot that chats naturally through Claude Code, Codex CLI, and Gemini CLI, with a single /model command that lists each provider's live model catalogue.",
   "main": "index.js",
   "type": "commonjs",
   "engines": {
-    "node": "20.x"
+    "node": "22.x"
   },
   "scripts": {
     "start": "node index.js",
@@ -13,8 +13,8 @@
   },
   "dependencies": {
     "discord.js": "^14.16.3",
-    "@anthropic-ai/claude-code": "^1.0.0",
-    "@openai/codex": "^0.1.0",
-    "@google/gemini-cli": "^0.1.0"
+    "@anthropic-ai/claude-code": "^2.1.270",
+    "@openai/codex": "^0.154.0",
+    "@google/gemini-cli": "^0.59.0"
   }
 }
