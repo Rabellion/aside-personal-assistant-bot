@@ -16,7 +16,14 @@
 // enabled. Only run it while you want that, and never share the secret.
 
 const os = require('os');
-const { spawn } = require('child_process');
+// cross-spawn (not plain child_process.spawn) because it correctly resolves
+// Windows .cmd/.bat shims AND quotes each argument individually. Plain
+// spawn(..., {shell:true}) on Windows just joins file+args with a naive
+// single space and applies NO quoting at all - a multi-word, multi-line
+// prompt gets torn into a jumble of separate tokens before the CLI ever
+// sees it, which is why the CLI reported an empty/missing prompt even
+// though the earlier .cmd-launch crash was already fixed.
+const spawn = require('cross-spawn');
 const WebSocket = require('ws');
 
 // Never let one bad task take the whole agent (and your PowerShell window)
@@ -86,24 +93,11 @@ function runLocal(provider, modelId, prompt, onProgress) {
       return;
     }
 
-    // Windows npm CLIs (claude/codex/gemini) are installed as .cmd shim
-    // files, and Windows genuinely cannot execute a .cmd without a shell -
-    // spawn() throws if you try with shell:false, and since that throw
-    // happened inside an async handler with nothing catching it, it crashed
-    // this whole process (Node treats an unhandled rejection as fatal by
-    // default). shell:true is required here, not just convenient.
-    //
-    // This isn't a new injection surface: the CLI itself already runs with
-    // --dangerously-skip-permissions / danger-full-access / yolo, so it can
-    // already touch anything on this machine for a verified owner message.
-    // The real security boundary is the OWNER_ID gate in index.js upstream,
-    // not shell quoting.
     let child;
     try {
       child = spawn(spec.bin, spec.args(prompt, modelId), {
         cwd: WORKDIR,
         env: process.env,
-        shell: process.platform === 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (err) {
