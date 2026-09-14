@@ -22,9 +22,19 @@ const MODELS = {
     bin: 'gemini',
     args: (prompt) => ['-p', prompt],
   },
+  aside: {
+    label: 'Aside (your real browser/Gmail/WhatsApp/CMS agent)',
+    // Special-cased in index.js: this bot never answers directly for
+    // "aside" mode. It stays silent and lets your Aside polling routine
+    // (which actually has your browser/accounts) pick up the message on
+    // its next run, since a Heroku dyno has no access to your local
+    // Aside session, browser profile, or logged-in accounts.
+    bin: null,
+    args: () => [],
+  },
 };
 
-const DEFAULT_MODEL = 'claude';
+const DEFAULT_MODEL = 'aside';
 
 function isValidModel(key) {
   return Object.prototype.hasOwnProperty.call(MODELS, key);
