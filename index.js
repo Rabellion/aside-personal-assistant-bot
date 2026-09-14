@@ -1,6 +1,16 @@
 const { Client, GatewayIntentBits, Partials, ChannelType } = require('discord.js');
 const { setupCredentials } = require('./credentials');
-const { MODELS, DEFAULT_MODEL, isValidModel, listModels, runModel } = require('./modelRunner');
+const {
+  MODELS,
+  DEFAULT_MODEL,
+  isValidModel,
+  listModels,
+  runModel,
+  CLAUDE_MODELS,
+  DEFAULT_CLAUDE_MODEL,
+  isValidClaudeModel,
+  listClaudeModels,
+} = require('./modelRunner');
 
 setupCredentials();
 
@@ -18,8 +28,9 @@ const client = new Client({
 });
 
 // In-memory only - resets on dyno restart. Fine for a single-user bot;
-// defaults back to DEFAULT_MODEL after a restart.
+// defaults back to DEFAULT_MODEL / DEFAULT_CLAUDE_MODEL after a restart.
 let currentModel = DEFAULT_MODEL;
+let currentClaudeModel = DEFAULT_CLAUDE_MODEL;
 
 client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}. Active model: ${currentModel}.`);
@@ -43,11 +54,24 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
 
+  if (interaction.commandName === 'claudemodel') {
+    const choice = interaction.options.getString('name', true);
+    if (!isValidClaudeModel(choice)) {
+      await interaction.reply({ content: `Unknown Claude model "${choice}".`, ephemeral: true });
+      return;
+    }
+    currentClaudeModel = choice;
+    const note = currentModel !== 'claude' ? ` (currently on \`/model ${currentModel}\` though - switch to \`/model claude\` to actually use it)` : '';
+    await interaction.reply(`Claude will now use **${CLAUDE_MODELS[choice]}**${note}.`);
+    return;
+  }
+
   if (interaction.commandName === 'status') {
     await interaction.reply(
       `Active model: **${MODELS[currentModel].label}**\n` +
       `Available: ${listModels().map((m) => `\`${m.key}\``).join(', ')}\n` +
-      `Just DM me like a normal chat, no command needed - use \`/model\` to switch backends.`
+      `Claude variant: **${CLAUDE_MODELS[currentClaudeModel]}** (\`${currentClaudeModel}\`)\n` +
+      `Just DM me like a normal chat, no command needed - use \`/model\` to switch backends and \`/claudemodel\` to switch the Claude variant.`
     );
     return;
   }
@@ -55,8 +79,9 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.commandName === 'help') {
     await interaction.reply(
       "Just send me a normal DM and I'll reply - no command required.\n" +
-      "`/model <name>` - switch between Claude / ChatGPT / Gemini\n" +
-      "`/status` - see which model is active\n" +
+      "`/model <name>` - switch between Claude / ChatGPT / Gemini / Aside\n" +
+      "`/claudemodel <name>` - switch between Claude Sonnet 5 / Opus 5 / Haiku 5\n" +
+      "`/status` - see which model and Claude variant are active\n" +
       "For your Aside-integrated schedule and anything needing your Gmail/WhatsApp/university CMS, that's handled separately by your Aside routines in this same DM."
     );
     return;
@@ -76,7 +101,7 @@ client.on('messageCreate', async (message) => {
   }, 8000);
 
   try {
-    const result = await runModel(currentModel, message.content.trim());
+    const result = await runModel(currentModel, message.content.trim(), { claudeModel: currentClaudeModel });
     const text = result.text || '(empty response)';
     // Discord messages cap at 2000 chars - split long replies.
     const chunks = text.match(/[\s\S]{1,1900}/g) || [text];

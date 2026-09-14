@@ -9,7 +9,10 @@ const MODELS = {
     label: 'Claude (via Claude Code / your Claude subscription)',
     bin: 'claude',
     // -p / --print = non-interactive "print mode": run once, print the reply, exit.
-    args: (prompt) => ['-p', prompt, '--dangerously-skip-permissions'],
+    // --model comes from the currently selected Claude variant (see CLAUDE_MODELS
+    // below, switchable at runtime with /claudemodel), falling back to the
+    // CLAUDE_MODEL env var, then the hardcoded default.
+    args: (prompt, opts = {}) => ['-p', prompt, '--model', opts.claudeModel || process.env.CLAUDE_MODEL || DEFAULT_CLAUDE_MODEL, '--dangerously-skip-permissions'],
   },
   chatgpt: {
     label: 'ChatGPT (via Codex CLI / your ChatGPT subscription)',
@@ -36,6 +39,23 @@ const MODELS = {
 
 const DEFAULT_MODEL = 'aside';
 
+// Claude variants selectable at runtime via the bot's /claudemodel command.
+// These are the model IDs Claude Code's --model flag expects.
+const CLAUDE_MODELS = {
+  'claude-sonnet-5': 'Claude Sonnet 5 (balanced, default)',
+  'claude-opus-5': 'Claude Opus 5 (most capable, slower)',
+  'claude-haiku-5': 'Claude Haiku 5 (fastest, lightweight)',
+};
+const DEFAULT_CLAUDE_MODEL = 'claude-sonnet-5';
+
+function isValidClaudeModel(key) {
+  return Object.prototype.hasOwnProperty.call(CLAUDE_MODELS, key);
+}
+
+function listClaudeModels() {
+  return Object.entries(CLAUDE_MODELS).map(([key, label]) => ({ key, label }));
+}
+
 function isValidModel(key) {
   return Object.prototype.hasOwnProperty.call(MODELS, key);
 }
@@ -44,13 +64,17 @@ function listModels() {
   return Object.entries(MODELS).map(([key, m]) => ({ key, label: m.label }));
 }
 
-function runModel(modelKey, prompt) {
+function runModel(modelKey, prompt, opts = {}) {
   const model = MODELS[modelKey] || MODELS[DEFAULT_MODEL];
   return new Promise((resolve) => {
     let settled = false;
-    const child = spawn(model.bin, model.args(prompt), {
+    const child = spawn(model.bin, model.args(prompt, opts), {
       env: process.env,
       shell: false,
+      // Close stdin immediately - without this, some CLIs (Claude Code
+      // included) hang waiting for piped input that will never arrive,
+      // since Node's spawn() leaves stdin open as a pipe by default.
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     let stdout = '';
@@ -88,4 +112,14 @@ function runModel(modelKey, prompt) {
   });
 }
 
-module.exports = { MODELS, DEFAULT_MODEL, isValidModel, listModels, runModel };
+module.exports = {
+  MODELS,
+  DEFAULT_MODEL,
+  isValidModel,
+  listModels,
+  runModel,
+  CLAUDE_MODELS,
+  DEFAULT_CLAUDE_MODEL,
+  isValidClaudeModel,
+  listClaudeModels,
+};

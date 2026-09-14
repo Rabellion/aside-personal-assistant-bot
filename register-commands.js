@@ -1,7 +1,7 @@
 // Registers the bot's slash commands with Discord. Run this once after
 // deploying (or whenever the command list changes): `npm run register-commands`.
 const { REST, Routes, SlashCommandBuilder } = require('discord.js');
-const { listModels } = require('./modelRunner');
+const { listModels, listClaudeModels } = require('./modelRunner');
 
 const commands = [
   new SlashCommandBuilder()
@@ -10,6 +10,14 @@ const commands = [
     .addStringOption((opt) => {
       opt.setName('name').setDescription('Which model to use').setRequired(true);
       for (const m of listModels()) opt.addChoices({ name: m.label, value: m.key });
+      return opt;
+    }),
+  new SlashCommandBuilder()
+    .setName('claudemodel')
+    .setDescription('Switch which Claude variant is used when /model is set to claude')
+    .addStringOption((opt) => {
+      opt.setName('name').setDescription('Which Claude variant to use').setRequired(true);
+      for (const m of listClaudeModels()) opt.addChoices({ name: m.label, value: m.key });
       return opt;
     }),
   new SlashCommandBuilder()
