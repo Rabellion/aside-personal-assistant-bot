@@ -24,6 +24,8 @@ const {
   getLastInbound,
 } = require('./relay');
 const { startBridge, dispatchToAgent, isAgentOnline, agentStatus } = require('./bridge');
+const contacts = require('./contacts');
+const { parseDmRequest, resolveRecipient } = require('./dmIntent');
 
 setupCredentials();
 
@@ -33,6 +35,7 @@ const OWNER_NAME = process.env.OWNER_NAME || 'Huzaifa';
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.MessageContent,
   ],
@@ -102,6 +105,36 @@ async function think(prompt) {
       : res;
   }
   return runModel(currentProvider, currentModelId, prompt);
+}
+
+// Handles a plain-English "tell X ..." / "dm X ..." request. Returns true if
+// it fully handled the message (sent, or asked a clarifying question), false
+// if it decided this wasn't really a send request after all.
+async function tryHandleNaturalDm(message, { recipientText, messageText }) {
+  const resolution = await resolveRecipient(message, recipientText);
+
+  if (resolution.none) {
+    await message.channel.send(
+      `I don't know who "${recipientText}" is yet. @mention them once (or tell me their exact username) and I'll remember it for next time.`,
+    );
+    return true;
+  }
+
+  if (resolution.candidates) {
+    const list = resolution.candidates.slice(0, 5).map((u) => `\`@${u.username}\``).join(', ');
+    await message.channel.send(`A few people match "${recipientText}": ${list}. Which one?`);
+    return true;
+  }
+
+  const { user } = resolution;
+  try {
+    await sendDM(client, user.id, messageText, { ownerName: OWNER_NAME });
+    await contacts.learn(message.channel, recipientText, user.id, user.username);
+    await message.channel.send(`Sent to **${user.globalName || user.username}**:\n> ${messageText}`);
+  } catch (err) {
+    await message.channel.send(`Couldn't message **${user.username}**. ${describeSendError(err)}`);
+  }
+  return true;
 }
 
 async function respondWith(channel, text) {
@@ -177,7 +210,9 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.reply(
           'DM me normally and I answer - no command needed.\n\n' +
           '`/model` - pick provider (Anthropic / OpenAI / Google / Aside) then a live model\n' +
-          '`/dm <user> <message>` - I message one of your friends **as your assistant**, and forward anything they reply\n' +
+          'Just say "tell morph I\'m running late" or "dm sarah: you around?" and I\'ll send it **as your assistant** - no /dm needed. ' +
+          'I only ask before sending if I genuinely can\'t tell who you mean.\n' +
+          '`/dm <user> <message>` - explicit fallback for the same thing\n' +
           '`/agent` - is the local agent on your PC connected?\n' +
           '`/status` - active model and where it runs\n\n' +
           'When the local agent is running, the LLMs get real tool access on your PC. ' +
@@ -271,6 +306,14 @@ client.on('messageCreate', async (message) => {
       await message.reply(`Couldn't deliver that. ${describeSendError(err)}`);
     }
     return;
+  }
+
+  // --- "tell/dm/message someone something" in plain English, no /dm needed ---
+  const dmRequest = parseDmRequest(message.content.trim());
+  if (dmRequest) {
+    const handled = await tryHandleNaturalDm(message, dmRequest);
+    if (handled) return;
+    // Fell through (not actually a send request) - keep going to normal chat.
   }
 
   // --- normal assistant conversation ---
