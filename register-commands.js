@@ -1,9 +1,8 @@
-// Registers the bot's slash commands with Discord. Run this once after
-// deploying (or whenever the command list changes): `npm run register-commands`.
+// Registers the bot's slash commands with Discord.
+// Run after deploying or whenever the command list changes.
 //
-// /model deliberately takes NO options. Picking a provider and a model happens
-// through select menus so the model list can be fetched live at click time
-// instead of being frozen into the command definition.
+// /model deliberately takes NO options - provider and model are chosen through
+// select menus so the model list is fetched live at click time.
 const { REST, Routes, SlashCommandBuilder } = require('discord.js');
 
 const commands = [
@@ -11,8 +10,16 @@ const commands = [
     .setName('model')
     .setDescription('Pick which provider and model answers your DMs'),
   new SlashCommandBuilder()
+    .setName('dm')
+    .setDescription('Message one of your friends as your assistant, and relay their reply back to you')
+    .addUserOption((o) => o.setName('user').setDescription('Who to message').setRequired(true))
+    .addStringOption((o) => o.setName('message').setDescription('What to say').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('agent')
+    .setDescription('Check whether the local agent on your PC is connected'),
+  new SlashCommandBuilder()
     .setName('status')
-    .setDescription('Show the active provider and model'),
+    .setDescription('Show the active provider, model, and where it runs'),
   new SlashCommandBuilder()
     .setName('help')
     .setDescription('Show what this bot can do'),

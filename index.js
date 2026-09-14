@@ -16,12 +16,19 @@ const {
   getModels,
   runModel,
 } = require('./modelRunner');
+const {
+  sendDM,
+  forwardToOwner,
+  resolveOwnerReply,
+  describeSendError,
+  getLastInbound,
+} = require('./relay');
+const { startBridge, dispatchToAgent, isAgentOnline, agentStatus } = require('./bridge');
 
 setupCredentials();
 
-// Hard allowlist: this bot only ever talks to one person (you). Reject
-// everyone else even if they somehow DM it.
 const OWNER_ID = process.env.OWNER_DISCORD_USER_ID || '845391729549115402';
+const OWNER_NAME = process.env.OWNER_NAME || 'Huzaifa';
 
 const client = new Client({
   intents: [
@@ -32,13 +39,19 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message],
 });
 
-// In-memory only - resets on dyno restart, which is fine for a single user.
 let currentProvider = DEFAULT_PROVIDER;
 let currentModelId = PROVIDERS[DEFAULT_PROVIDER].defaultModel;
 
 function activeLabel() {
   const p = PROVIDERS[currentProvider];
   return currentModelId ? `${p.label} - \`${currentModelId}\`` : p.label;
+}
+
+function whereItRuns() {
+  if (currentProvider === 'aside') return 'your Aside routine (real browser + accounts)';
+  return isAgentOnline()
+    ? 'your PC via the local agent (full tool access)'
+    : 'the Heroku dyno (sandboxed - no access to your PC)';
 }
 
 function providerRow() {
@@ -60,7 +73,6 @@ function modelRow(providerKey, models) {
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(`model:pick:${providerKey}`)
-      // Discord allows at most 25 options in a select menu.
       .setPlaceholder(`Pick a ${PROVIDERS[providerKey].label} model`)
       .addOptions(
         models.slice(0, 25).map((m) => ({
@@ -73,52 +85,109 @@ function modelRow(providerKey, models) {
   );
 }
 
+// Route a prompt to the best available executor: the user's PC if the local
+// agent is up, otherwise the sandboxed dyno.
+async function think(prompt) {
+  if (isAgentOnline() && currentProvider !== 'aside') {
+    const res = await dispatchToAgent({
+      provider: currentProvider,
+      modelId: currentModelId,
+      prompt,
+    });
+    if (res.ok) return res;
+    // If the PC run failed, still try the dyno so the user gets *something*.
+    const fallback = await runModel(currentProvider, currentModelId, prompt);
+    return fallback.ok
+      ? { ok: true, text: `${fallback.text}\n\n_(local agent failed, answered from the server instead: ${res.text.slice(0, 200)})_` }
+      : res;
+  }
+  return runModel(currentProvider, currentModelId, prompt);
+}
+
+async function respondWith(channel, text) {
+  const body = text || '(empty response)';
+  const chunks = body.match(/[\s\S]{1,1900}/g) || [body];
+  for (const chunk of chunks) await channel.send(chunk);
+}
+
 client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}. Active: ${currentProvider} / ${currentModelId}.`);
 });
 
 client.on('interactionCreate', async (interaction) => {
   try {
-    const userId = interaction.user && interaction.user.id;
-    if (userId !== OWNER_ID) {
+    if (interaction.user.id !== OWNER_ID) {
       if (interaction.isRepliable()) {
         await interaction.reply({ content: 'This bot is private.', flags: MessageFlags.Ephemeral });
       }
       return;
     }
 
-    // --- slash commands ---
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'model') {
         await interaction.reply({
-          content: `Currently: **${activeLabel()}**\nPick a provider:`,
+          content: `Currently: **${activeLabel()}**\nRunning on: ${whereItRuns()}\n\nPick a provider:`,
           components: [providerRow()],
         });
+        return;
+      }
+
+      if (interaction.commandName === 'dm') {
+        const target = interaction.options.getUser('user', true);
+        const text = interaction.options.getString('message', true);
+        await interaction.deferReply();
+        try {
+          await sendDM(client, target.id, text, { ownerName: OWNER_NAME });
+          await interaction.editReply(`Sent to **${target.globalName || target.username}**:\n> ${text}`);
+        } catch (err) {
+          await interaction.editReply(`Couldn't message **${target.username}**. ${describeSendError(err)}`);
+        }
+        return;
+      }
+
+      if (interaction.commandName === 'agent') {
+        const st = agentStatus();
+        if (!st.online) {
+          await interaction.reply(
+            'Local agent: **offline**.\n' +
+            'Right now I can only think, not act on your PC. Start `local-agent.js` on your machine ' +
+            'to give Claude/ChatGPT/Gemini real shell, file and browser access.',
+          );
+          return;
+        }
+        await interaction.reply(
+          `Local agent: **online**\n` +
+          `Host: \`${st.host}\`\nPlatform: \`${st.platform}\`\n` +
+          `Tools: ${st.tools.map((t) => `\`${t}\``).join(', ')}\n` +
+          `Connected: ${st.connectedAt}`,
+        );
         return;
       }
 
       if (interaction.commandName === 'status') {
         await interaction.reply(
           `Active: **${activeLabel()}**\n` +
-          `Use \`/model\` to switch provider and model.\n` +
-          'Just DM me normally, no command needed.',
+          `Executing on: ${whereItRuns()}\n` +
+          `Local agent: **${isAgentOnline() ? 'online' : 'offline'}**`,
         );
         return;
       }
 
       if (interaction.commandName === 'help') {
         await interaction.reply(
-          "Send me a normal DM and I'll reply - no command required.\n" +
-          '`/model` - pick a provider (Anthropic / OpenAI / Google / Aside), then pick from its live model list\n' +
-          '`/status` - show the active provider and model\n' +
-          'On **Aside** the Heroku bot stays quiet and your Aside routine answers instead, using your real browser, Gmail, WhatsApp and university CMS.',
+          'DM me normally and I answer - no command needed.\n\n' +
+          '`/model` - pick provider (Anthropic / OpenAI / Google / Aside) then a live model\n' +
+          '`/dm <user> <message>` - I message one of your friends **as your assistant**, and forward anything they reply\n' +
+          '`/agent` - is the local agent on your PC connected?\n' +
+          '`/status` - active model and where it runs\n\n' +
+          'When the local agent is running, the LLMs get real tool access on your PC. ' +
+          'When it is not, they run sandboxed on the server and can only talk.',
         );
         return;
       }
       return;
     }
 
-    // --- select menus ---
     if (interaction.isStringSelectMenu()) {
       const id = interaction.customId;
 
@@ -128,8 +197,6 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.update({ content: `Unknown provider "${choice}".`, components: [] });
           return;
         }
-
-        // Aside has no model list - select it directly.
         if (!PROVIDERS[choice].bin) {
           currentProvider = choice;
           currentModelId = null;
@@ -139,24 +206,16 @@ client.on('interactionCreate', async (interaction) => {
           });
           return;
         }
-
-        // Fetching a live model list can take a moment.
         await interaction.deferUpdate();
         let models;
         try {
           models = await getModels(choice);
         } catch (err) {
-          await interaction.editReply({
-            content: `Couldn't load models for **${PROVIDERS[choice].label}**: ${err.message}`,
-            components: [],
-          });
+          await interaction.editReply({ content: `Couldn't load models for **${PROVIDERS[choice].label}**: ${err.message}`, components: [] });
           return;
         }
         if (!models.length) {
-          await interaction.editReply({
-            content: `No models available for **${PROVIDERS[choice].label}**.`,
-            components: [],
-          });
+          await interaction.editReply({ content: `No models available for **${PROVIDERS[choice].label}**.`, components: [] });
           return;
         }
         await interaction.editReply({
@@ -175,7 +234,7 @@ client.on('interactionCreate', async (interaction) => {
         currentProvider = providerKey;
         currentModelId = interaction.values[0];
         await interaction.update({
-          content: `Switched to **${activeLabel()}**. Just DM me normally, no command needed.`,
+          content: `Switched to **${activeLabel()}**.\nRunning on: ${whereItRuns()}`,
           components: [],
         });
         return;
@@ -188,12 +247,33 @@ client.on('interactionCreate', async (interaction) => {
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
-  if (message.channel.type !== ChannelType.DM) return; // DM-only bot
-  if (message.author.id !== OWNER_ID) return; // hard allowlist
+  if (message.channel.type !== ChannelType.DM) return;
   if (!message.content || !message.content.trim()) return;
 
-  // "aside" provider: stay completely silent. There is no CLI to run, and the
-  // Aside event-driven routine answers these messages with real account access.
+  // --- someone who is NOT the owner DMed the assistant ---
+  if (message.author.id !== OWNER_ID) {
+    try {
+      await forwardToOwner(client, OWNER_ID, message);
+      console.log(`[relay] forwarded a DM from ${message.author.username}`);
+    } catch (err) {
+      console.error('[relay] failed to forward:', err.message);
+    }
+    return;
+  }
+
+  // --- owner replying to a forwarded message routes back to that friend ---
+  const route = await resolveOwnerReply(message);
+  if (route) {
+    try {
+      await sendDM(client, route.userId, message.content.trim(), { ownerName: OWNER_NAME });
+      await message.react('\u2705').catch(() => {});
+    } catch (err) {
+      await message.reply(`Couldn't deliver that. ${describeSendError(err)}`);
+    }
+    return;
+  }
+
+  // --- normal assistant conversation ---
   if (!PROVIDERS[currentProvider] || !PROVIDERS[currentProvider].bin) return;
 
   await message.channel.sendTyping().catch(() => {});
@@ -202,18 +282,20 @@ client.on('messageCreate', async (message) => {
   }, 8000);
 
   try {
-    const result = await runModel(currentProvider, currentModelId, message.content.trim());
-    const text = result.text || '(empty response)';
-    // Discord messages cap at 2000 chars - split long replies.
-    const chunks = text.match(/[\s\S]{1,1900}/g) || [text];
-    for (const chunk of chunks) {
-      await message.channel.send(chunk);
-    }
+    const result = await think(message.content.trim());
+    await respondWith(message.channel, result.text);
   } catch (err) {
     await message.channel.send(`Something went wrong: ${err.message}`);
   } finally {
     clearInterval(typingInterval);
   }
+});
+
+// Heroku routes HTTP to the web dyno, so the bridge and the bot share one
+// process. That also guarantees only one Discord gateway connection.
+startBridge({
+  port: process.env.PORT || 3000,
+  secret: process.env.AGENT_SHARED_SECRET,
 });
 
 client.login(process.env.DISCORD_TOKEN);
