@@ -56,6 +56,18 @@ const LOCAL_PROVIDERS = {
   },
 };
 
+function buildAgentPrompt(userPrompt) {
+  return [
+    "You are Huzaifa's autonomous desktop personal assistant, working from a Discord DM.",
+    'Complete the request using local tools when that helps: shell, filesystem and browser automation.',
+    'You are operating on Huzaifa\'s own PC. Be proactive, inspect what you need, and report the actual result.',
+    'Never impersonate Huzaifa. Do not send external messages, make purchases, sign documents, delete data, or change account security without explicit confirmation from Huzaifa in this conversation.',
+    'For a Discord DM to a friend, tell Huzaifa to use the bot\'s /dm command, which sends as the assistant and relays replies.',
+    '',
+    `User request: ${userPrompt}`,
+  ].join('\\n');
+}
+
 function runLocal(provider, modelId, prompt, onProgress) {
   return new Promise((resolve) => {
     const spec = LOCAL_PROVIDERS[provider];
@@ -64,13 +76,14 @@ function runLocal(provider, modelId, prompt, onProgress) {
       return;
     }
 
-    // On Windows these CLIs are .cmd/.ps1 shims, which spawn() can't exec
-    // directly without a shell.
-    const isWindows = process.platform === 'win32';
-    const child = spawn(spec.bin, spec.args(prompt, modelId), {
+    // On Windows npm provides .cmd shims. Call that shim directly rather than
+    // using shell:true: a Discord prompt must never be interpolated into a
+    // Windows shell command line.
+    const executable = process.platform === 'win32' ? `${spec.bin}.cmd` : spec.bin;
+    const child = spawn(executable, spec.args(prompt, modelId), {
       cwd: WORKDIR,
       env: process.env,
-      shell: isWindows,
+      shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -134,7 +147,7 @@ function connect() {
     if (msg.type === 'task') {
       console.log(`[agent] task ${msg.taskId}: ${msg.provider}/${msg.modelId || 'default'}`);
       let lastSent = 0;
-      const result = await runLocal(msg.provider, msg.modelId, msg.prompt, () => {
+      const result = await runLocal(msg.provider, msg.modelId, buildAgentPrompt(msg.prompt), () => {
         // Throttled heartbeat so the bot can keep the typing indicator alive.
         const now = Date.now();
         if (now - lastSent > 5000) {
