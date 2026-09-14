@@ -30,6 +30,7 @@ let wss = null;
 let agentSocket = null;
 let agentInfo = null;
 const pending = new Map(); // taskId -> { resolve, timer, onProgress }
+let onWhatsAppInbound = null; // set by index.js
 
 function isAgentOnline() {
   return !!(agentSocket && agentSocket.readyState === 1);
@@ -109,7 +110,17 @@ function handleAgentMessage(raw) {
     clearTimeout(entry.timer);
     pending.delete(msg.taskId);
     entry.resolve({ ok: !!msg.ok, text: msg.text || '(empty response)' });
+    return;
   }
+
+  // An inbound WhatsApp message the local gateway just received.
+  if (msg.type === 'whatsapp-inbound' && onWhatsAppInbound) {
+    onWhatsAppInbound(msg.payload || {});
+  }
+}
+
+function setWhatsAppHandler(fn) {
+  onWhatsAppInbound = fn;
 }
 
 function startBridge({ port, secret, onReady }) {
@@ -188,4 +199,4 @@ function startBridge({ port, secret, onReady }) {
   return server;
 }
 
-module.exports = { startBridge, dispatchToAgent, isAgentOnline, agentStatus };
+module.exports = { startBridge, dispatchToAgent, isAgentOnline, agentStatus, setWhatsAppHandler };

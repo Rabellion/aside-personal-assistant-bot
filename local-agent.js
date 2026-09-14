@@ -16,6 +16,7 @@
 // enabled. Only run it while you want that, and never share the secret.
 
 const os = require('os');
+const http = require('http');
 // cross-spawn (not plain child_process.spawn) because it correctly resolves
 // Windows .cmd/.bat shims AND quotes each argument individually. Plain
 // spawn(..., {shell:true}) on Windows just joins file+args with a naive
@@ -112,6 +113,13 @@ function buildAgentPrompt(userPrompt) {
     'Be careful: these are his real live sessions, not a scratch browser. Read freely,',
     'but do not send, delete, purchase or submit anything without asking him first.',
     '',
+    'You also have WhatsApp tools (whatsapp_send_message, whatsapp_list_chats,',
+    'whatsapp_get_messages, whatsapp_check_number, whatsapp_status) wired to his own',
+    'WhatsApp account. Use them to pull work/university updates when asked. When',
+    'sending, write as his assistant, not as him. Sending is hard rate-limited to',
+    'protect the account from a WhatsApp ban - if a send is refused for pacing,',
+    'report that honestly rather than retrying in a loop.',
+    '',
     'Boundaries: never impersonate Huzaifa. Do not send messages to other people,',
     'make purchases, sign documents, delete data, or change account/security settings',
     'without explicit confirmation from him first. To DM a friend on Discord, tell him',
@@ -176,6 +184,53 @@ function runLocal(provider, modelId, prompt, onProgress) {
 let ws = null;
 let reconnectDelay = 1000;
 let heartbeatTimer = null;
+
+// --- WhatsApp inbound webhook ---------------------------------------------
+// The OpenWA gateway POSTs new messages here; we relay them up the existing
+// bridge so they surface in Discord. Bound to localhost only - nothing is
+// exposed to the network.
+const WA_WEBHOOK_PORT = Number(process.env.WA_WEBHOOK_PORT || 2786);
+
+function startWhatsAppWebhook() {
+  const server = http.createServer((req, res) => {
+    if (req.method !== 'POST') {
+      res.writeHead(405); res.end('method not allowed'); return;
+    }
+    let body = '';
+    req.on('data', (d) => {
+      body += d;
+      if (body.length > 1e6) req.destroy(); // basic flood guard
+    });
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"ok":true}');
+      try {
+        const evt = JSON.parse(body);
+        const d = evt.data || evt.message || evt.payload || evt;
+        // Ignore our own outgoing messages, otherwise every send echoes back.
+        if (d.fromMe === true) return;
+        const payload = {
+          from: d.from || d.chatId || d.author || '',
+          senderName: d.senderName || d.notifyName || d.pushName || d.sender || '',
+          chatName: d.chatName || d.chat || '',
+          body: d.body || d.text || d.caption || '',
+        };
+        if (!payload.body && !payload.from) return;
+        if (ws && ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: 'whatsapp-inbound', payload }));
+          console.log(`[whatsapp] relayed message from ${payload.senderName || payload.from}`);
+        }
+      } catch (err) {
+        console.log('[whatsapp] bad webhook payload:', err.message);
+      }
+    });
+  });
+
+  server.on('error', (err) => console.log('[whatsapp] webhook server error:', err.message));
+  server.listen(WA_WEBHOOK_PORT, '127.0.0.1', () => {
+    console.log(`[whatsapp] webhook listening on http://127.0.0.1:${WA_WEBHOOK_PORT}/`);
+  });
+}
 // Heroku's router drops any connection idle for 55s (H15 "Idle connection").
 // A task that runs for minutes without printing anything would otherwise get
 // its connection killed out from under it, losing the result.
@@ -255,4 +310,5 @@ function connect() {
   });
 }
 
+startWhatsAppWebhook();
 connect();

@@ -23,7 +23,7 @@ const {
   describeSendError,
   getLastInbound,
 } = require('./relay');
-const { startBridge, dispatchToAgent, isAgentOnline, agentStatus } = require('./bridge');
+const { startBridge, dispatchToAgent, isAgentOnline, agentStatus, setWhatsAppHandler } = require('./bridge');
 const contacts = require('./contacts');
 const memory = require('./memory');
 const reminders = require('./reminders');
@@ -204,6 +204,22 @@ client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}. Active: ${currentProvider} / ${currentModelId}.`);
   // Reload reminders written before the last restart and restart the ticker.
   await reminders.resume(client, OWNER_ID);
+
+  // Forward inbound WhatsApp straight to Discord, so work/university updates
+  // land in one place without Huzaifa having to go looking for them.
+  setWhatsAppHandler(async (payload) => {
+    try {
+      const owner = await client.users.fetch(OWNER_ID);
+      const dm = await owner.createDM();
+      const from = payload.senderName || payload.from || 'unknown';
+      const chat = payload.chatName && payload.chatName !== from ? ` in ${payload.chatName}` : '';
+      const body = String(payload.body || '').slice(0, 1500) || '(no text - media or attachment)';
+      await dm.send(`**WhatsApp** from **${from}**${chat}:\n> ${body.replace(/\n/g, '\n> ')}`);
+      console.log(`[whatsapp] forwarded message from ${from}`);
+    } catch (err) {
+      console.error('[whatsapp] failed to forward:', err.message);
+    }
+  });
 });
 
 client.on('interactionCreate', async (interaction) => {
