@@ -126,10 +126,11 @@ const PROVIDERS = {
   google: {
     label: 'Google (Gemini)',
     bin: 'gemini',
-    defaultModel: 'gemini-2.5-pro',
+    defaultModel: 'gemini-pro-latest',
     fallbackModels: [
+      { id: 'gemini-pro-latest', label: 'Gemini Pro Latest' },
+      { id: 'gemini-flash-latest', label: 'Gemini Flash Latest' },
       { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-      { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
     ],
     async listModels() {
       const key = process.env.GEMINI_API_KEY;
@@ -144,9 +145,14 @@ const PROVIDERS = {
       );
       if (!res.ok) throw new Error(`Gemini model list failed (${res.status}).`);
       const json = await res.json();
+      // The catalogue also contains image / TTS / transcription variants that
+      // are useless for a chat bot. Keep them, but sort plain text-chat models
+      // first so they survive Discord's 25-option menu limit.
+      const isChat = (id) => !/(image|tts|transcribe|embedding|banana|gemma)/i.test(id);
       return (json.models || [])
         .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
-        .map((m) => ({ id: String(m.name).replace(/^models\//, ''), label: m.displayName || m.name }));
+        .map((m) => ({ id: String(m.name).replace(/^models\//, ''), label: m.displayName || m.name }))
+        .sort((a, b) => (isChat(b.id) ? 1 : 0) - (isChat(a.id) ? 1 : 0));
     },
     // --approval-mode yolo auto-approves actions so a headless run never
     // blocks on a confirmation prompt.
