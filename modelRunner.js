@@ -19,12 +19,17 @@ const MODELS = {
     bin: 'codex',
     // `codex exec` = non-interactive automation mode. --skip-git-repo-check
     // because the Heroku dyno's app directory isn't a git checkout.
-    args: (prompt) => ['exec', prompt, '--full-auto', '--skip-git-repo-check'],
+    // --dangerously-bypass-approvals-and-sandbox (not --full-auto) because
+    // Codex's normal OS-level sandbox (landlock/seccomp) can't set up inside
+    // a Heroku dyno container and silently hangs instead of erroring.
+    args: (prompt) => ['exec', prompt, '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox'],
   },
   gemini: {
     label: 'Gemini (via Gemini CLI / your Gemini subscription)',
     bin: 'gemini',
-    args: (prompt) => ['-p', prompt],
+    // --yolo = auto-approve all actions, skipping any interactive
+    // confirmation prompts that would otherwise hang a headless process.
+    args: (prompt) => ['-p', prompt, '--yolo'],
   },
   aside: {
     label: 'Aside (your real browser/Gmail/WhatsApp/CMS agent)',
