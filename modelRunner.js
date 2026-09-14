@@ -154,12 +154,16 @@ const PROVIDERS = {
         .map((m) => ({ id: String(m.name).replace(/^models\//, ''), label: m.displayName || m.name }))
         .sort((a, b) => (isChat(b.id) ? 1 : 0) - (isChat(a.id) ? 1 : 0));
     },
-    // --approval-mode yolo auto-approves actions so a headless run never
-    // blocks on a confirmation prompt.
+    //   --approval-mode yolo : auto-approve actions so a headless run never
+    //     blocks on a confirmation prompt
+    //   --skip-trust : /app on the dyno is not a "trusted folder", and without
+    //     this Gemini silently downgrades approval mode back to "default"
+    //     and then refuses to run at all
     args: (prompt, modelId) => [
       '-p', prompt,
       '-m', modelId,
       '--approval-mode', 'yolo',
+      '--skip-trust',
     ],
   },
 

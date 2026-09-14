@@ -51,6 +51,12 @@ function setupCredentials() {
     console.log('[credentials] GEMINI_API_KEY not set - the Google provider will not work until it is.');
   }
 
+  // Gemini CLI refuses to run in a folder it doesn't consider "trusted", and a
+  // dyno's /app never is. Belt and braces alongside the --skip-trust flag.
+  if (!process.env.GEMINI_CLI_TRUST_WORKSPACE) {
+    process.env.GEMINI_CLI_TRUST_WORKSPACE = 'true';
+  }
+
   // Legacy: only used if you still have a working Gemini OAuth credential file.
   if (process.env.GEMINI_AUTH_JSON_BASE64) {
     const geminiAuthPath = process.env.GEMINI_AUTH_JSON_PATH || path.join(home, '.gemini', 'oauth_creds.json');
