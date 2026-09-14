@@ -44,7 +44,7 @@ const DEFAULT_MODEL = 'aside';
 const CLAUDE_MODELS = {
   'claude-sonnet-5': 'Claude Sonnet 5 (balanced, default)',
   'claude-opus-5': 'Claude Opus 5 (most capable, slower)',
-  'claude-haiku-5': 'Claude Haiku 5 (fastest, lightweight)',
+  'claude-haiku-4-5': 'Claude Haiku 4.5 (fastest, lightweight)',
 };
 const DEFAULT_CLAUDE_MODEL = 'claude-sonnet-5';
 
