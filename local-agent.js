@@ -19,6 +19,16 @@ const os = require('os');
 const { spawn } = require('child_process');
 const WebSocket = require('ws');
 
+// Never let one bad task take the whole agent (and your PowerShell window)
+// down. A CLI tool's own unrestricted shell/file access is the real risk
+// surface here already, by design - this is just about staying online.
+process.on('uncaughtException', (err) => {
+  console.error('[agent] uncaught exception (continuing):', err);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('[agent] unhandled rejection (continuing):', err);
+});
+
 const BRIDGE_URL = process.env.BRIDGE_URL;
 const SECRET = process.env.AGENT_SHARED_SECRET;
 const WORKDIR = process.env.AGENT_WORKDIR || os.homedir();
@@ -65,7 +75,7 @@ function buildAgentPrompt(userPrompt) {
     'For a Discord DM to a friend, tell Huzaifa to use the bot\'s /dm command, which sends as the assistant and relays replies.',
     '',
     `User request: ${userPrompt}`,
-  ].join('\\n');
+  ].join('\n');
 }
 
 function runLocal(provider, modelId, prompt, onProgress) {
@@ -76,16 +86,30 @@ function runLocal(provider, modelId, prompt, onProgress) {
       return;
     }
 
-    // On Windows npm provides .cmd shims. Call that shim directly rather than
-    // using shell:true: a Discord prompt must never be interpolated into a
-    // Windows shell command line.
-    const executable = process.platform === 'win32' ? `${spec.bin}.cmd` : spec.bin;
-    const child = spawn(executable, spec.args(prompt, modelId), {
-      cwd: WORKDIR,
-      env: process.env,
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    // Windows npm CLIs (claude/codex/gemini) are installed as .cmd shim
+    // files, and Windows genuinely cannot execute a .cmd without a shell -
+    // spawn() throws if you try with shell:false, and since that throw
+    // happened inside an async handler with nothing catching it, it crashed
+    // this whole process (Node treats an unhandled rejection as fatal by
+    // default). shell:true is required here, not just convenient.
+    //
+    // This isn't a new injection surface: the CLI itself already runs with
+    // --dangerously-skip-permissions / danger-full-access / yolo, so it can
+    // already touch anything on this machine for a verified owner message.
+    // The real security boundary is the OWNER_ID gate in index.js upstream,
+    // not shell quoting.
+    let child;
+    try {
+      child = spawn(spec.bin, spec.args(prompt, modelId), {
+        cwd: WORKDIR,
+        env: process.env,
+        shell: process.platform === 'win32',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      resolve({ ok: false, text: `Couldn't start ${spec.bin} locally: ${err.message}` });
+      return;
+    }
 
     let stdout = '';
     let stderr = '';
@@ -146,15 +170,22 @@ function connect() {
 
     if (msg.type === 'task') {
       console.log(`[agent] task ${msg.taskId}: ${msg.provider}/${msg.modelId || 'default'}`);
-      let lastSent = 0;
-      const result = await runLocal(msg.provider, msg.modelId, buildAgentPrompt(msg.prompt), () => {
-        // Throttled heartbeat so the bot can keep the typing indicator alive.
-        const now = Date.now();
-        if (now - lastSent > 5000) {
-          lastSent = now;
-          try { ws.send(JSON.stringify({ type: 'progress', taskId: msg.taskId, text: '' })); } catch (_) { /* ignore */ }
-        }
-      });
+      let result;
+      try {
+        let lastSent = 0;
+        result = await runLocal(msg.provider, msg.modelId, buildAgentPrompt(msg.prompt), () => {
+          // Throttled heartbeat so the bot can keep the typing indicator alive.
+          const now = Date.now();
+          if (now - lastSent > 5000) {
+            lastSent = now;
+            try { ws.send(JSON.stringify({ type: 'progress', taskId: msg.taskId, text: '' })); } catch (_) { /* ignore */ }
+          }
+        });
+      } catch (err) {
+        // Belt and braces: runLocal() shouldn't throw, but if it ever does,
+        // report it instead of taking the agent down.
+        result = { ok: false, text: `Local agent hit an unexpected error: ${err.message}` };
+      }
       try {
         ws.send(JSON.stringify({ type: 'result', taskId: msg.taskId, ok: result.ok, text: result.text }));
       } catch (err) {
