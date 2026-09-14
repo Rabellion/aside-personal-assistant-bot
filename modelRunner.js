@@ -126,11 +126,15 @@ const PROVIDERS = {
   google: {
     label: 'Google (Gemini)',
     bin: 'gemini',
-    defaultModel: 'gemini-pro-latest',
+    // Flash, not Pro: on the AI Studio free tier the Pro models report
+    // "limit: 0" for generate_content_free_tier_requests, so they 429 on every
+    // single call. Flash and Flash-Lite work.
+    defaultModel: 'gemini-flash-latest',
     fallbackModels: [
-      { id: 'gemini-pro-latest', label: 'Gemini Pro Latest' },
       { id: 'gemini-flash-latest', label: 'Gemini Flash Latest' },
-      { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+      { id: 'gemini-flash-lite-latest', label: 'Gemini Flash-Lite Latest' },
+      { id: 'gemini-3.7-flash', label: 'Gemini 3.7 Flash' },
+      { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash' },
     ],
     async listModels() {
       const key = process.env.GEMINI_API_KEY;
@@ -149,10 +153,17 @@ const PROVIDERS = {
       // are useless for a chat bot. Keep them, but sort plain text-chat models
       // first so they survive Discord's 25-option menu limit.
       const isChat = (id) => !/(image|tts|transcribe|embedding|banana|gemma)/i.test(id);
+      // Rank: plain chat models first, then Flash ahead of Pro, because Pro is
+      // quota-blocked on the free tier and would only ever return a 429.
+      const rank = (id) => {
+        if (!isChat(id)) return 3;
+        if (/pro/i.test(id)) return 2;
+        return /flash/i.test(id) ? 0 : 1;
+      };
       return (json.models || [])
         .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
         .map((m) => ({ id: String(m.name).replace(/^models\//, ''), label: m.displayName || m.name }))
-        .sort((a, b) => (isChat(b.id) ? 1 : 0) - (isChat(a.id) ? 1 : 0));
+        .sort((a, b) => rank(a.id) - rank(b.id));
     },
     //   --approval-mode yolo : auto-approve actions so a headless run never
     //     blocks on a confirmation prompt
@@ -276,8 +287,14 @@ function runModel(providerKey, modelId, prompt) {
       if (code === 0 && stdout.trim()) {
         resolve({ ok: true, text: stdout.trim() });
       } else {
-        const detail = (stderr || stdout || `exit code ${code}`).trim().slice(0, 1500);
-        resolve({ ok: false, text: `${provider.label} failed: ${detail}` });
+        const raw = (stderr || stdout || `exit code ${code}`).trim();
+        let hint = '';
+        if (/quota|rate.?limit|RESOURCE_EXHAUSTED/i.test(raw)) {
+          hint = '\n\nThat model is rate-limited on the current plan. Try `/model` and pick a Flash variant.';
+        } else if (/no longer available to new users/i.test(raw)) {
+          hint = '\n\nThat model has been retired. Try `/model` and pick a newer one.';
+        }
+        resolve({ ok: false, text: `${provider.label} failed: ${raw.slice(0, 1400)}${hint}` });
       }
     });
   });
