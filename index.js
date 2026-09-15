@@ -27,6 +27,7 @@ const { startBridge, dispatchToAgent, isAgentOnline, agentStatus, setWhatsAppHan
 const contacts = require('./contacts');
 const memory = require('./memory');
 const reminders = require('./reminders');
+const whatsapp = require('./whatsapp');
 const { parseDmRequest, resolveRecipient } = require('./dmIntent');
 
 setupCredentials();
@@ -113,10 +114,30 @@ function schedulingInstructions() {
   ].join('\n');
 }
 
+// If the message references WhatsApp and isn't already a resolved send
+// request, pull in recent chat activity so the model can actually answer
+// "what's new on WhatsApp" instead of claiming it can't check.
+async function whatsappContext(prompt) {
+  if (!whatsapp.configured() || !/\bwhatsapp\b/i.test(prompt)) return '';
+  try {
+    const chats = await whatsapp.listChats(10);
+    if (!chats || !Array.isArray(chats) || !chats.length) return '';
+    const summary = chats
+      .slice(0, 10)
+      .map((c) => `- ${c.name || c.id}: ${(c.lastMessage && c.lastMessage.body) || '(no recent text)'}`)
+      .join('\n');
+    return `Recent WhatsApp chats (for context, don't just recite this list):\n${summary}\n\n`;
+  } catch (err) {
+    console.log('[whatsapp] context fetch failed:', err.message);
+    return '';
+  }
+}
+
 async function think(channel, prompt) {
   await memory.load(channel);
   const context = memory.buildContext();
-  const fullPrompt = `${context}${schedulingInstructions()}Huzaifa just said: ${prompt}`;
+  const waContext = await whatsappContext(prompt);
+  const fullPrompt = `${context}${waContext}${schedulingInstructions()}Huzaifa just said: ${prompt}`;
   console.log(`[think] provider=${currentProvider} model=${currentModelId} agentOnline=${isAgentOnline()} promptLen=${fullPrompt.length}`);
 
   let result;
@@ -190,6 +211,27 @@ async function tryHandleNaturalDm(message, { recipientText, messageText }) {
     await message.channel.send(`Sent to **${user.globalName || user.username}**:\n> ${messageText}`);
   } catch (err) {
     await message.channel.send(`Couldn't message **${user.username}**. ${describeSendError(err)}`);
+  }
+  return true;
+}
+
+// Handles a plain-English "tell X on whatsapp ..." request. Returns true if
+// it fully handled the message (sent, or asked a clarifying question).
+async function tryHandleWhatsAppSend(message, { recipientText, messageText }) {
+  const digits = recipientText.replace(/[^\d]/g, '');
+  if (digits.length < 7) {
+    const who = recipientText || 'them';
+    await message.channel.send(`What's ${who}'s WhatsApp number? Include the country code (e.g. 923253697546).`);
+    return true;
+  }
+  // Note: intentionally not stored in contacts.js - that store resolves Discord
+  // users by fetching them via the Discord API, and a phone number would break
+  // that path if it were ever looked up through the same alias resolver.
+  try {
+    await whatsapp.sendMessage(digits, messageText);
+    await message.channel.send(`Sent on WhatsApp to **${digits}**:\n> ${messageText}`);
+  } catch (err) {
+    await message.channel.send(`Couldn't send that WhatsApp message: ${err.message}`);
   }
   return true;
 }
@@ -283,6 +325,20 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
+      if (interaction.commandName === 'whatsapp') {
+        if (!whatsapp.configured()) {
+          await interaction.reply('WhatsApp is not wired up yet - set OPENWA_URL, OPENWA_API_KEY, and OPENWA_SESSION_ID.');
+          return;
+        }
+        try {
+          const s = await whatsapp.status();
+          await interaction.reply(`WhatsApp session **${s.name || 'unknown'}** is **${s.status || 'unknown'}**${s.phone ? ` (${s.phone})` : ''}.`);
+        } catch (err) {
+          await interaction.reply(`Couldn't reach the WhatsApp gateway: ${err.message}`);
+        }
+        return;
+      }
+
       if (interaction.commandName === 'reminders') {
         const cancelId = interaction.options.getString('cancel');
         if (cancelId) {
@@ -315,7 +371,11 @@ client.on('interactionCreate', async (interaction) => {
           'I remember our recent conversation and anything you tell me to remember, shared across every ' +
           'model - switching /model doesn\'t reset it. Say "remember that ..." to save something for good.\n\n' +
           'When the local agent is running, the LLMs get real tool access on your PC. ' +
-          'When it is not, they run sandboxed on the server and can only talk.',
+          'When it is not, they run sandboxed on the server and can only talk.\n\n' +
+          (whatsapp.configured()
+            ? 'WhatsApp is connected (`/whatsapp` for status). Just mention "whatsapp" and ' +
+              'I\'ll pull in recent chats, or say "tell <number> on whatsapp ..." to send.'
+            : 'WhatsApp is not connected yet.'),
         );
         return;
       }
@@ -415,8 +475,18 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
+  // --- "send/tell X on whatsapp ..." - routes to the Oracle-hosted gateway ---
+  const text = message.content.trim();
+  if (/\bwhatsapp\b/i.test(text) && whatsapp.configured()) {
+    const waRequest = parseDmRequest(text);
+    if (waRequest) {
+      const handled = await tryHandleWhatsAppSend(message, waRequest);
+      if (handled) return;
+    }
+  }
+
   // --- "tell/dm/message someone something" in plain English, no /dm needed ---
-  const dmRequest = parseDmRequest(message.content.trim());
+  const dmRequest = parseDmRequest(text);
   if (dmRequest) {
     const handled = await tryHandleNaturalDm(message, dmRequest);
     if (handled) return;
@@ -449,6 +519,7 @@ client.on('messageCreate', async (message) => {
 startBridge({
   port: process.env.PORT || 3000,
   secret: process.env.AGENT_SHARED_SECRET,
+  whatsappWebhookSecret: process.env.WHATSAPP_WEBHOOK_SECRET,
 });
 
 client.login(process.env.DISCORD_TOKEN);

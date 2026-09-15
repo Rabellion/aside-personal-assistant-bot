@@ -18,6 +18,9 @@ const commands = [
     .setName('agent')
     .setDescription('Check whether the local agent on your PC is connected'),
   new SlashCommandBuilder()
+    .setName('whatsapp')
+    .setDescription('Check whether the WhatsApp gateway is connected'),
+  new SlashCommandBuilder()
     .setName('reminders')
     .setDescription('List scheduled reminders, or cancel one')
     .addStringOption((o) => o.setName('cancel').setDescription('Reminder id to cancel').setRequired(false)),

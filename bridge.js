@@ -123,7 +123,60 @@ function setWhatsAppHandler(fn) {
   onWhatsAppInbound = fn;
 }
 
-function startBridge({ port, secret, onReady }) {
+// Recent OpenWA delivery ids, so a retried webhook (at-least-once delivery,
+// per OpenWA's own docs) doesn't forward the same WhatsApp message twice.
+const seenIdempotencyKeys = new Set();
+const SEEN_KEYS_MAX = 500;
+function rememberKey(key) {
+  if (!key) return false;
+  if (seenIdempotencyKeys.has(key)) return true;
+  seenIdempotencyKeys.add(key);
+  if (seenIdempotencyKeys.size > SEEN_KEYS_MAX) {
+    const oldest = seenIdempotencyKeys.values().next().value;
+    seenIdempotencyKeys.delete(oldest);
+  }
+  return false;
+}
+
+// Handles a raw OpenWA webhook delivery: verifies the HMAC over the exact raw
+// bytes (per OpenWA's docs - a re-serialized parse can reorder keys and break
+// the signature), dedupes, and forwards inbound messages only.
+function handleWhatsAppWebhook(rawBody, headers, secret) {
+  const signature = headers['x-openwa-signature'];
+  if (secret) {
+    if (!signature) return { status: 401, body: 'missing signature' };
+    const expected = `sha256=${crypto.createHmac('sha256', secret).update(rawBody).digest('hex')}`;
+    const a = Buffer.from(signature);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      return { status: 401, body: 'invalid signature' };
+    }
+  }
+
+  let evt;
+  try {
+    evt = JSON.parse(rawBody.toString('utf8'));
+  } catch (_) {
+    return { status: 400, body: 'bad json' };
+  }
+
+  const idKey = headers['x-openwa-idempotency-key'] || evt.idempotencyKey;
+  if (rememberKey(idKey)) return { status: 200, body: 'duplicate, already handled' };
+
+  if (evt.event === 'message.received' && evt.data && !evt.data.fromMe && onWhatsAppInbound) {
+    const d = evt.data;
+    onWhatsAppInbound({
+      from: d.chatId || d.from || '',
+      senderName: d.notifyName || d.author || d.from || '',
+      chatName: d.isGroup ? (d.chatId || '') : '',
+      body: d.body || (d.type && d.type !== 'text' ? `[${d.type}]` : ''),
+    });
+  }
+
+  return { status: 200, body: 'ok' };
+}
+
+function startBridge({ port, secret, whatsappWebhookSecret, onReady }) {
   const server = http.createServer((req, res) => {
     if (req.url === '/health' || req.url === '/') {
       const status = agentStatus();
@@ -131,6 +184,32 @@ function startBridge({ port, secret, onReady }) {
       res.end(JSON.stringify({ ok: true, agent: status }));
       return;
     }
+
+    if (req.url === '/whatsapp-webhook' && req.method === 'POST') {
+      const chunks = [];
+      let total = 0;
+      req.on('data', (c) => {
+        total += c.length;
+        if (total > 2 * 1024 * 1024) { req.destroy(); return; } // 2MB flood guard
+        chunks.push(c);
+      });
+      req.on('end', () => {
+        try {
+          const raw = Buffer.concat(chunks);
+          const lowerHeaders = {};
+          for (const [k, v] of Object.entries(req.headers)) lowerHeaders[k.toLowerCase()] = v;
+          const result = handleWhatsAppWebhook(raw, lowerHeaders, whatsappWebhookSecret);
+          res.writeHead(result.status, { 'Content-Type': 'text/plain' });
+          res.end(result.body);
+        } catch (err) {
+          console.log('[bridge] whatsapp webhook error:', err.message);
+          res.writeHead(500);
+          res.end('error');
+        }
+      });
+      return;
+    }
+
     res.writeHead(404);
     res.end('not found');
   });
