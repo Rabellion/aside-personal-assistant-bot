@@ -123,6 +123,11 @@ function setWhatsAppHandler(fn) {
   onWhatsAppInbound = fn;
 }
 
+let onCallEvent = null;
+function setCallEventHandler(fn) {
+  onCallEvent = fn;
+}
+
 // Recent OpenWA delivery ids, so a retried webhook (at-least-once delivery,
 // per OpenWA's own docs) doesn't forward the same WhatsApp message twice.
 const seenIdempotencyKeys = new Set();
@@ -182,6 +187,38 @@ function startBridge({ port, secret, whatsappWebhookSecret, onReady }) {
       const status = agentStatus();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, agent: status }));
+      return;
+    }
+
+    // Live call status/transcript pushed from the calling agent on EC2.
+    // Reuses AGENT_SHARED_SECRET rather than adding another credential - the
+    // calling agent is the same class of trusted component as the local agent.
+    if (req.url === '/call-event' && req.method === 'POST') {
+      const chunks = [];
+      let total = 0;
+      req.on('data', (c) => {
+        total += c.length;
+        if (total > 256 * 1024) { req.destroy(); return; }
+        chunks.push(c);
+      });
+      req.on('end', async () => {
+        try {
+          const provided = req.headers['x-call-secret'];
+          if (!secret || !provided || !safeEqual(String(provided), String(secret))) {
+            res.writeHead(401, { 'Content-Type': 'text/plain' });
+            res.end('unauthorized');
+            return;
+          }
+          const evt = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          if (onCallEvent) await onCallEvent(evt);
+          res.writeHead(200, { 'Content-Type': 'text/plain' });
+          res.end('ok');
+        } catch (err) {
+          console.log('[bridge] call-event error:', err.message);
+          res.writeHead(400, { 'Content-Type': 'text/plain' });
+          res.end('bad request');
+        }
+      });
       return;
     }
 
@@ -278,4 +315,4 @@ function startBridge({ port, secret, whatsappWebhookSecret, onReady }) {
   return server;
 }
 
-module.exports = { startBridge, dispatchToAgent, isAgentOnline, agentStatus, setWhatsAppHandler };
+module.exports = { startBridge, dispatchToAgent, isAgentOnline, agentStatus, setWhatsAppHandler, setCallEventHandler };
