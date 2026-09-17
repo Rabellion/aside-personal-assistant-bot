@@ -29,6 +29,8 @@ const memory = require('./memory');
 const reminders = require('./reminders');
 const whatsapp = require('./whatsapp');
 const { parseDmRequest, resolveRecipient } = require('./dmIntent');
+const waTriggers = require('./waTriggers');
+const voiceCall = require('./voiceCall');
 
 setupCredentials();
 
@@ -273,6 +275,12 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    // wcall / wmessage confirmation buttons and contact pickers
+    if (interaction.isButton() || interaction.isStringSelectMenu()) {
+      const handled = await waTriggers.handleInteraction(interaction);
+      if (handled) return;
+    }
+
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'model') {
         await interaction.reply({
@@ -465,6 +473,21 @@ client.on('messageCreate', async (message) => {
       await message.reply(`Couldn't deliver that. ${describeSendError(err)}`);
     }
     return;
+  }
+
+  // --- wcall / wmessage trigger words ---
+  // Checked before everything else so the trigger is unambiguous and never
+  // gets swallowed by the looser natural-language intent matching below.
+  const trigger = waTriggers.parseTrigger(message.content.trim());
+  if (trigger) {
+    try {
+      const handled = await waTriggers.handleTrigger(message, trigger);
+      if (handled) return;
+    } catch (err) {
+      console.error('[waTriggers] failed:', err);
+      await message.channel.send(`That didn't work: ${err.message}`).catch(() => {});
+      return;
+    }
   }
 
   // --- explicit "remember that ..." shortcut, no LLM call needed ---
