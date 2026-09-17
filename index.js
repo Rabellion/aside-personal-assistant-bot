@@ -23,7 +23,7 @@ const {
   describeSendError,
   getLastInbound,
 } = require('./relay');
-const { startBridge, dispatchToAgent, isAgentOnline, agentStatus, setWhatsAppHandler } = require('./bridge');
+const { startBridge, dispatchToAgent, isAgentOnline, agentStatus, setWhatsAppHandler, setCallEventHandler } = require('./bridge');
 const contacts = require('./contacts');
 const memory = require('./memory');
 const reminders = require('./reminders');
@@ -31,6 +31,7 @@ const whatsapp = require('./whatsapp');
 const { parseDmRequest, resolveRecipient } = require('./dmIntent');
 const waTriggers = require('./waTriggers');
 const voiceCall = require('./voiceCall');
+const callLive = require('./callLive');
 
 setupCredentials();
 
@@ -251,6 +252,16 @@ client.once('ready', async () => {
 
   // Forward inbound WhatsApp straight to Discord, so work/university updates
   // land in one place without Huzaifa having to go looking for them.
+  // Live call status + rolling transcript, edited into the message that the
+  // wcall confirmation created.
+  setCallEventHandler(async (evt) => {
+    try {
+      await callLive.onEvent(evt);
+    } catch (err) {
+      console.error('[callLive] failed to handle event:', err.message);
+    }
+  });
+
   setWhatsAppHandler(async (payload) => {
     try {
       const owner = await client.users.fetch(OWNER_ID);

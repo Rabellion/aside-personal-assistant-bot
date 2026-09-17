@@ -19,6 +19,7 @@ const {
 const waContacts = require('./waContacts');
 const whatsapp = require('./whatsapp');
 const voiceCall = require('./voiceCall');
+const callLive = require('./callLive');
 
 // Pending confirmations, keyed by a short token embedded in the customId.
 // Discord caps customId at 100 chars, so the payload lives here, not there.
@@ -77,10 +78,21 @@ function actionVerb(kind) {
   return kind === 'call' ? 'Call' : 'Message';
 }
 
-async function executeAction({ kind, phone, name, body }) {
+/**
+ * Runs the confirmed action.
+ *
+ * For calls this returns a placeholder message that `callLive` then edits in
+ * place as real events arrive (ringing / answered / declined / transcript),
+ * so the Discord message doubles as a live call view.
+ */
+async function executeAction({ kind, phone, name, body }, channel) {
   if (kind === 'call') {
     const job = await voiceCall.placeCall({ to: phone, goal: body, name });
-    return `Calling **${name || phone}** now (${waContacts.formatPhone(phone)}).\n> ${body}\n_Job \`${job.jobId}\` - the AI will introduce itself as your assistant._`;
+    const who = name ? `**${name}**` : `**${waContacts.formatPhone(phone)}**`;
+    const num = name ? ` (${waContacts.formatPhone(phone)})` : '';
+    const card = await channel.send(`**Call** to ${who}${num}\n**Status:** Dialing...\n> ${body}`);
+    callLive.register(job.jobId, { channel, message: card, name, phone, goal: body });
+    return null; // the live card is the response
   }
   await whatsapp.sendMessage(phone, body);
   return `Sent on WhatsApp to **${name || phone}** (${waContacts.formatPhone(phone)}):\n> ${body}`;
@@ -212,8 +224,11 @@ async function handleInteraction(interaction) {
     }
     await interaction.update({ content: `Working on it - ${data.kind === 'call' ? 'calling' : 'messaging'} **${chosen.name}**...`, components: [] }).catch(() => {});
     try {
-      const msg = await executeAction({ kind: data.kind, phone: chosen.phone, name: chosen.name, body: data.body });
-      await interaction.followUp(msg);
+      const msg = await executeAction(
+        { kind: data.kind, phone: chosen.phone, name: chosen.name, body: data.body },
+        interaction.channel,
+      );
+      if (msg) await interaction.followUp(msg);
     } catch (err) {
       await interaction.followUp(`That didn't work: ${err.message}`);
     }
@@ -223,8 +238,8 @@ async function handleInteraction(interaction) {
   if (action === 'go') {
     await interaction.update({ content: `Working on it - ${data.kind === 'call' ? 'calling' : 'messaging'} **${data.name || data.phone}**...`, components: [] }).catch(() => {});
     try {
-      const msg = await executeAction(data);
-      await interaction.followUp(msg);
+      const msg = await executeAction(data, interaction.channel);
+      if (msg) await interaction.followUp(msg);
     } catch (err) {
       await interaction.followUp(`That didn't work: ${err.message}`);
     }
