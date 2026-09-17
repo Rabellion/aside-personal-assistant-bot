@@ -17,6 +17,7 @@ const {
 } = require('discord.js');
 
 const waContacts = require('./waContacts');
+const waAliases = require('./waAliases');
 const whatsapp = require('./whatsapp');
 const voiceCall = require('./voiceCall');
 const callLive = require('./callLive');
@@ -52,7 +53,17 @@ function takePending(token) {
  * decide using the real address book.
  */
 function parseTrigger(text) {
-  const m = String(text || '').trim().match(/^(wcall|wmessage)\s+([\s\S]+)$/i);
+  const raw = String(text || '').trim();
+
+  // `wsave <name> <number>` teaches a number for someone not in the WhatsApp
+  // address book (Discord-only friends, one-off numbers, etc).
+  const saveMatch = raw.match(/^wsave\s+(.+?)\s+(\+?[\d][\d\s-]{5,17}\d)\s*$/i);
+  if (saveMatch) {
+    return { kind: 'save', who: saveMatch[1].trim(), phone: saveMatch[2].replace(/[^\d]/g, '') };
+  }
+  if (/^wcontacts\s*$/i.test(raw)) return { kind: 'contacts' };
+
+  const m = raw.match(/^(wcall|wmessage)\s+([\s\S]+)$/i);
   if (!m) return null;
   const kind = m[1].toLowerCase() === 'wcall' ? 'call' : 'message';
   const rest = m[2].trim();
@@ -62,6 +73,19 @@ function parseTrigger(text) {
   const phoneFirst = rest.match(/^(\+?\d[\d\s-]{6,17}\d)\s+([\s\S]+)$/);
   if (phoneFirst) {
     return { kind, who: phoneFirst[1].replace(/[^\d]/g, ''), body: phoneFirst[2].trim(), isPhone: true };
+  }
+
+  // "<name> <number> <message>" - e.g. `wcall aden 923199262498 tell him hi`.
+  // Teaches the number as it goes, so the name works on its own next time.
+  const nameThenPhone = rest.match(/^(.+?)\s+(\+?\d[\d\s-]{5,17}\d)\s+([\s\S]+)$/);
+  if (nameThenPhone) {
+    return {
+      kind,
+      who: nameThenPhone[2].replace(/[^\d]/g, ''),
+      body: nameThenPhone[3].trim(),
+      isPhone: true,
+      learnName: nameThenPhone[1].trim(),
+    };
   }
 
   const words = rest.split(/\s+/);
@@ -105,6 +129,36 @@ async function executeAction({ kind, phone, name, body }, channel) {
 async function handleTrigger(message, parsed) {
   const { kind, isPhone } = parsed;
 
+  // `wsave <name> <number>`
+  if (kind === 'save') {
+    try {
+      const saved = await waAliases.save(message.channel, parsed.who, parsed.phone);
+      await message.channel.send(
+        `Saved **${saved.name}** as ${waContacts.formatPhone(saved.phone)}. You can now use \`wcall ${saved.name.toLowerCase()} ...\` or \`wmessage ${saved.name.toLowerCase()} ...\`.`,
+      );
+    } catch (err) {
+      await message.channel.send(`Couldn't save that: ${err.message}`);
+    }
+    return true;
+  }
+
+  // `wcontacts` - refresh the cached address book and show what's known
+  if (kind === 'contacts') {
+    try {
+      const fresh = await waContacts.all({ force: true });
+      const aliases = await waAliases.list(message.channel);
+      const aliasLines = aliases.length
+        ? aliases.map((a) => `- ${a.name} (${waContacts.formatPhone(a.phone)})`).join('\n')
+        : '_none yet - add one with_ `wsave <name> <number>`';
+      await message.channel.send(
+        `**WhatsApp address book:** ${fresh.length} saved contacts (refreshed just now)\n\n**Manually taught numbers:**\n${aliasLines}`,
+      );
+    } catch (err) {
+      await message.channel.send(`Couldn't refresh contacts: ${err.message}`);
+    }
+    return true;
+  }
+
   if (kind === 'call' && !voiceCall.configured()) {
     await message.channel.send('Voice calling is not configured yet (CALL_API_URL / CALL_API_KEY).');
     return true;
@@ -116,9 +170,18 @@ async function handleTrigger(message, parsed) {
 
   // Explicit number: still confirm, but there is nothing to resolve.
   if (isPhone) {
-    const token = putPending({ kind, phone: parsed.who, name: null, body: parsed.body });
+    let label = waContacts.formatPhone(parsed.who);
+    let learned = '';
+    if (parsed.learnName) {
+      try {
+        const saved = await waAliases.save(message.channel, parsed.learnName, parsed.who);
+        label = `${saved.name} (${waContacts.formatPhone(saved.phone)})`;
+        learned = `\n_Saved **${saved.name}** for next time._`;
+      } catch (_) { /* saving is a convenience, never block the action */ }
+    }
+    const token = putPending({ kind, phone: parsed.who, name: parsed.learnName || null, body: parsed.body });
     await message.channel.send({
-      content: `${actionVerb(kind)} **${waContacts.formatPhone(parsed.who)}**?\n> ${parsed.body}`,
+      content: `${actionVerb(kind)} **${label}**?\n> ${parsed.body}${learned}`,
       components: [confirmRow(token)],
     });
     return true;
@@ -129,7 +192,16 @@ async function handleTrigger(message, parsed) {
   let best = null;
   try {
     for (const cand of parsed.candidates) {
-      const found = await waContacts.search(cand.who);
+      // Taught aliases and the real address book are searched together, so a
+      // manually added number behaves exactly like a saved contact.
+      const [fromBook, fromAliases] = await Promise.all([
+        waContacts.search(cand.who),
+        waAliases.search(message.channel, cand.who),
+      ]);
+      const seen = new Set();
+      const found = [...fromAliases, ...fromBook]
+        .filter((c) => (seen.has(c.phone) ? false : seen.add(c.phone)))
+        .sort((a, b) => b._score - a._score);
       if (!found.length) continue;
       const top = found[0]._score;
       const nameWords = cand.who.split(/\s+/).length;
@@ -144,8 +216,11 @@ async function handleTrigger(message, parsed) {
 
   if (!best) {
     const guess = parsed.candidates[parsed.candidates.length - 1];
+    const verb = kind === 'call' ? 'wcall' : 'wmessage';
     await message.channel.send(
-      `No WhatsApp contact matches **${guess.who}**. Either it's saved under a different name, or give me the number directly:\n\`\`\`\n${kind === 'call' ? 'wcall' : 'wmessage'} 923001234567 ${guess.body}\n\`\`\``,
+      `I don't have a number for **${guess.who}** - not in your WhatsApp contacts and not saved here.\n\n` +
+      `Teach it once:\n\`\`\`\nwsave ${guess.who} 923001234567\n\`\`\`\n` +
+      `Or include the number inline:\n\`\`\`\n${verb} ${guess.who} 923001234567 ${guess.body}\n\`\`\``,
     );
     return true;
   }
